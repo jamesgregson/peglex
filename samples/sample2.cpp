@@ -41,7 +41,7 @@ auto get_compiler(){
         auto stmt = print
                   | pl::cb(lvalue & '=' & ws & expr & ws, [&](){ vm.emit_store(); });
         
-        auto parser = stmt & ws & pl::eof();
+        auto parser = pl::cb( pl::eps(), [&](){ vm.emit_line(line); } ) & stmt & ws & pl::eof();
 
         if( !parser.match( input ) ){
             std::cerr << "Compile error on line: " << line << std::endl;
@@ -59,8 +59,8 @@ int main( int argc, char **argv ){
     compiler(vm, ++line, "b = (5.0*(1.0 + 2.0*(3.0+a)) )" );
     compiler(vm, ++line, "print( b-a )" );
 
-    std::cout << "Disassembly" << std::endl;
-    std::cout << "===========" << std::endl; 
+    std::cout << "Decompiled" << std::endl;
+    std::cout << "==========" << std::endl; 
     std::cout << vm.decompile() << std::endl << std::endl;
 
     std::cout << "Running Program" << std::endl;

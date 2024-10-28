@@ -6,7 +6,7 @@ Grammars are constructed in C++ code directly using the templated nodes types pr
 
 Since grammars are built as compile-time trees with nodes stored by value, parsers require no dynamic memory allocation in most cases. Furthermore, since the nodes are arranged in depth-first order, this should also provide relatively good cache-coherence. That said, I don't know if it's particularly fast. Probably not since the 'and' and 'or' operators are binary...
 
-> **Editorial:** Overall, whether you use it or not, I hope that it's clear that this sub-500 line (including whitespace and comments) library does **a lot** and highlights how powerful PEGs are. The concepts were introduced in the '70s and formalized in 2004 but are far too powerful to stay as obscure as they have been, in my opinion. This README, without line-wrapping, is ~2/3 as long as the entire library....
+> **Editorial:** Overall, whether you use it or not, I hope that it's clear that this sub-500 line (including whitespace and comments) library does **a lot** and highlights how powerful PEGs are. The concepts were introduced in the '70s and formalized in 2004 but are far too powerful to stay as obscure as they have been, in my opinion. This README, without line-wrapping, is longer than the entire library....
 
 For a [motivating example](#rudimentary-compiler) check out [sample2](./samples/sample2.cpp) which implements a bytecode compiler for a rudimentary language in just over 40 lines that can parse and execute programs like this:
 
@@ -38,11 +38,22 @@ int main( int argc, char **argv ){
 }
 ```
 
+Topics:
+
+- [Introduction, Basics & Helpers](#introductions-basics--helpers) - a light introduction to PEGs and Peglex
+- [Callbacks & User-Defined Nodes](#callbacks--user-defined-nodes) - attach callbacks and custom matchers to grammar elements
+- [Lookahead & Conditional Matching](#lookahead--conditional-matching) - exploit the unbounded lookahead that PEGs provide
+- [Stateful Callbacks & Encapsulation](#stateful-callbacks--encapsulation) - wrap Peglex parsers in functions and return intermediate values
+- [Recursive Grammars](#recursive-grammars) - how to accommodate recursive grammars like parenthesized expressions
+- [Advanced Usage](#advanced-usage) - use more complex state for balanced tag matching and error reporting
+- [User-Defined Extensions](#user-defined-extensions) - define your own types that work with Peglex
+- [Rudimentary Compiler](#rudimentary-compiler) - use Peglex as a compiler/bytecode-generator for a simple language
+
 ## Introductions, Basics & Helpers
 
 Grammars are defined by `peglex::Pattern` subclasses. These provide a `std::optional<const char*> PatternSubType::match(const char*) const` method that returns an optional which contains the advanced input pointer on success. That is the entire interface to the core of the library.
 
-A number of convenience definitions are provided to easily construct more complex grammars and highlight how this simple idea can be built up. Names with leading upper-case letters denote `peglex::Pattern` subclasses and while lower-case are free functions:
+A number of convenience definitions are provided to easily construct more complex grammars and highlight how this simple idea can be built up. Names with leading upper-case letters denote `peglex::Pattern` subclasses while names that begin with lower-case letters are free functions:
 
 ```cpp
 inline Char  eof(){ return Char('\0'); }
@@ -76,7 +87,7 @@ if( res ){
 }
 ```
 
-The `&` and `|` operators build grammar elements whenever at least one of the left/right operands is a grammar element and the other type, if present, is `char` or `const char*`. The `!(expr)` operator negates a match for `expr`, leaving the input pointer unchanged when successful (i.e. when `expr` does **not** match). `(expr)?` is implemented as `maybe(expr)`, `(expr)*` is implemented as `star(expr)` and `(expr)+` is implemented as `plus(expr)` since the association/(un|bin|trin)aryness of the corresponding C++ operators do not match conventional grammars.
+Peglex uses the `&` and `|` operators to build grammar elements whenever at least one of the left/right operands is a grammar element and the other type, if present, is `char` or `const char*`. The `!(expr)` operator negates a match for `expr`, leaving the input pointer unchanged when successful (i.e. when `expr` does **not** match). `(expr)?` is implemented as `maybe(expr)`, `(expr)*` is implemented as `star(expr)` and `(expr)+` is implemented as `plus(expr)` since the association/(un|bin|trin)aryness of the corresponding C++ operators do not match conventional grammars.
 
 > **Note:** People new to PEGs should note that **unlike [Regular Expressions](https://en.wikipedia.org/wiki/Regular_expression)**, the `+` and `*` operators are **[greedy](https://en.wikipedia.org/wiki/Greedy_algorithm)**. Consequently grammars like `(ab)*ab` (or `star("ab")&"ab"` in Peglex) will **never match successfully** since the `*` operator will consume all the "ab" substrings and fail to match the final "ab". In other words, the `*` and `+` operators do not [backtrack](https://en.wikipedia.org/wiki/Backtracking). 
 
@@ -432,7 +443,7 @@ auto get_compiler(){
         auto stmt = print
                   | pl::cb(lvalue & '=' & ws & expr & ws, [&](){ vm.emit_store(); });
         
-        auto parser = stmt & ws & pl::eof();
+        auto parser = pl::cb( pl::eps(), [&](){ vm.emit_line(line); } ) & stmt & ws & pl::eof();
 
         if( !parser.match( input ) ){
             std::cerr << "Compile error on line: " << line << std::endl;
@@ -462,12 +473,12 @@ int main( int argc, char **argv ){
 }
 ```
 
-Running the sample program prints the disassembly of the resulting bytecode and prints the expected result of `53`:
+Running the sample program prints the disassembly of the resulting bytecode, runs the program and outputs the expected result of `53`:
 
 ```bash
-./sample2
-Disassembly
-===========
+$ ./sample2
+Decompiled
+==========
 .symbols
        0: a
        1: b
@@ -478,24 +489,27 @@ Disassembly
        3: 2
        4: 3
 .instructions
-       0: LOADA, 0
-       1: LOADC, 0
-       2: STORE
-       3: LOADA, 1
-       4: LOADC, 1
-       5: LOADC, 2
-       6: LOADC, 3
-       7: LOADC, 4
-       8: LOADV, 0
-       9: ADD
-      10: MUL
+       0: NOP        ; Line: 1
+       1: LOADA, 0
+       2: LOADC, 0
+       3: STORE
+       4: NOP        ; Line: 2
+       5: LOADA, 1
+       6: LOADC, 1
+       7: LOADC, 2
+       8: LOADC, 3
+       9: LOADC, 4
+      10: LOADV, 0
       11: ADD
       12: MUL
-      13: STORE
-      14: LOADV, 1
-      15: LOADV, 0
-      16: SUB
-      17: PRINT
+      13: ADD
+      14: MUL
+      15: STORE
+      16: NOP        ; Line: 3
+      17: LOADV, 1
+      18: LOADV, 0
+      19: SUB
+      20: PRINT
 
 Running Program
 ===============
