@@ -8,6 +8,36 @@ Since grammars are built as compile-time trees with nodes stored by value, parse
 
 > **Editorial:** Overall, whether you use it or not, I hope that it's clear that this sub-500 line (including whitespace and comments) library does **a lot** and highlights how powerful PEGs are. The concepts were introduced in the '70s and formalized in 2004 but are far too powerful to stay as obscure as they have been, in my opinion. This README, without line-wrapping, is ~2/3 as long as the entire library....
 
+For a [motivating example](#rudimentary-compiler) check out [sample2](./samples/sample2.cpp) which implements a bytecode compiler for a rudimentary language in just over 40 lines that can parse and execute programs like this:
+
+```cpp
+auto get_compiler(){
+    return []( StatementVM& vm, int16_t& line, const char* input ) {
+        // peglex parser and bytebode generation
+    };
+}
+
+int main( int argc, char **argv ){
+    auto compiler = get_compiler();
+
+    int16_t line = 0;
+    StatementVM vm;
+    compiler(vm, ++line, "a = 2.0" );
+    compiler(vm, ++line, "b = (5.0*(1.0 + 2.0*(3.0+a)) )" );
+    compiler(vm, ++line, "print( b-a )" );
+
+    std::cout << "Disassembly" << std::endl;
+    std::cout << "===========" << std::endl; 
+    std::cout << vm.decompile() << std::endl << std::endl;
+
+    std::cout << "Running Program" << std::endl;
+    std::cout << "===============" << std::endl;
+    vm.run();
+
+    return 0;
+}
+```
+
 ## Introductions, Basics & Helpers
 
 Grammars are defined by `peglex::Pattern` subclasses. These provide a `std::optional<const char*> PatternSubType::match(const char*) const` method that returns an optional which contains the advanced input pointer on success. That is the entire interface to the core of the library.
@@ -351,3 +381,123 @@ While you can always extend the library functionality at run-ish-time by using t
 Just make sure any child nodes are stored by value or you will have a rough time.
 
 This is the **only** reason why C++20 is required; you could pretty easily strip all the `requires` lines from `./peglex/include/peglex/peglex.h` and get a C++11/14/17 (probably!?!?) library. Then you'd have to just deal with the million lines of inscrutable error messages when you make a minor mistake. Or embrace that it's 2024 and we can have nice things, unless you're in industry.
+
+## Rudimentary Compiler
+
+While the examples above focused on parsing, it is also possible to leverage Peglex parsers to do higher-level tasks. In [sample2.cpp](./samples/sample2.cpp) a simple language is defined that allows statements like `<var> = <expr>` and `print( <expr> )`. `<expr>` can be real-valued expressions using `+`, `-`, `*` `/` (with optional parenthesized sub-expressions) that include reference to already-defined variables. Assignment to an undefined variable creates it, assignment to an existing variable updates it.
+
+To implement this, Peglex callbacks emit instructions for a simple [virtual machine](https://en.wikipedia.org/wiki/Virtual_machine) (VM) defined in [sample2.h](./samples/sample2.h). This 'compiles' the supplied program which can then be executed by the VM. The entire 'compiler' is just over 40 lines of code. The grammar itself handles operator precedence and conversion from infix to reverse-Polish suitable for stack-based evaluation. This example also illustrates how parsers can interact with global state by passing in the VM instance in which to generate bytecode:
+
+```cpp
+#include "sample2.h"
+
+#include <peglex/peglex.h>
+
+#include <cstdint>
+#include <iostream>
+
+auto get_compiler(){
+    return []( StatementVM& vm, int16_t& line, const char* input ) {
+        namespace pl = peglex;
+
+        pl::UserFnRegistry<int> user_fn;
+
+        // whitespace
+        auto wschar  = pl::space() | pl::tab() | pl::carriage_return();
+        auto ws      = pl::star(wschar);
+
+        // identifiers and statement delimiter
+        auto ident   = pl::alpha() & pl::star( pl::alphanum() );
+        auto real    = pl::cb( pl::real(), [&]( auto s ){ vm.emit_loadc(s); }) & ws;
+        auto rvalue  = pl::cb( ident,      [&]( auto s ){ vm.emit_loadv(s); }) & ws;
+        auto lvalue  = pl::cb( ident,      [&]( auto s ){ vm.emit_loada(s); }) & ws;
+
+        auto factor = rvalue | real | ( '(' & ws & pl::cb( user_fn.cb(0) ) & ')' & ws );
+        auto term = factor & star( 
+            pl::cb( pl::Char('*') & ws & factor, [&](){ vm.emit_mul(); } ) |
+            pl::cb( pl::Char('/') & ws & factor, [&](){ vm.emit_div(); } )
+        );
+        auto expr = term & star( 
+            pl::cb( pl::Char('+') &ws & term, [&](){ vm.emit_add(); } ) |
+            pl::cb( pl::Char('-') &ws & term, [&](){ vm.emit_sub(); } )
+        );
+
+        // bind exprs back to inside parenthesized expressions
+        user_fn.bind( 0, expr );
+
+        auto print = pl::cb( pl::Str("print") & ws & '(' & ws & expr & ws & ')' & ws, [&](){ 
+            vm.emit_print(); }
+        );
+
+        auto stmt = print
+                  | pl::cb(lvalue & '=' & ws & expr & ws, [&](){ vm.emit_store(); });
+        
+        auto parser = stmt & ws & pl::eof();
+
+        if( !parser.match( input ) ){
+            std::cerr << "Compile error on line: " << line << std::endl;
+            throw std::runtime_error("Compilation failed.");
+        }
+    };
+};
+
+int main( int argc, char **argv ){
+    auto compiler = get_compiler();
+
+    int16_t line = 0;
+    StatementVM vm;
+    compiler(vm, ++line, "a = 2.0" );
+    compiler(vm, ++line, "b = (5.0*(1.0 + 2.0*(3.0+a)) )" );
+    compiler(vm, ++line, "print( b-a )" );
+
+    std::cout << "Disassembly" << std::endl;
+    std::cout << "===========" << std::endl; 
+    std::cout << vm.decompile() << std::endl << std::endl;
+
+    std::cout << "Running Program" << std::endl;
+    std::cout << "===============" << std::endl;
+    vm.run();
+
+    return 0;
+}
+```
+
+Running the sample program prints the disassembly of the resulting bytecode and prints the expected result of `53`:
+
+```bash
+./sample2
+Disassembly
+===========
+.symbols
+       0: a
+       1: b
+.constants
+       0: 2
+       1: 5
+       2: 1
+       3: 2
+       4: 3
+.instructions
+       0: LOADA, 0
+       1: LOADC, 0
+       2: STORE
+       3: LOADA, 1
+       4: LOADC, 1
+       5: LOADC, 2
+       6: LOADC, 3
+       7: LOADC, 4
+       8: LOADV, 0
+       9: ADD
+      10: MUL
+      11: ADD
+      12: MUL
+      13: STORE
+      14: LOADV, 1
+      15: LOADV, 0
+      16: SUB
+      17: PRINT
+
+Running Program
+===============
+53
+```
